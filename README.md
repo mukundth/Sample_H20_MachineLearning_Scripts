@@ -6,7 +6,6 @@ This contains the code for doing machine learning exercises written on R-H2O. Al
  3. GBM
  4. Ensemble
  5. Deep Learning (Feed Forward Neural Net)
- This code also contains 
  1. Performance Measurement
  2. PR curves
  3. AUC 
