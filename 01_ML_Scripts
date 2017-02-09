@@ -1,0 +1,591 @@
+
+## Create an H2O cloud 
+library(h2o)
+h2o.init(
+  nthreads=-1,            ## -1: use all available threads
+  max_mem_size = "20G")    ## specify the memory size for the H2O cloud
+options(java.parameters ="-Xmx512m")
+#h2o.removeAll() # Clean slate - just in case the cluster was already running
+
+## Load a file from disk
+df <- h2o.importFile(path = normalizePath("~/ORM_OOM/New_train_ome_data_1m.csv"))  ##Training/Validation/Test dataset##
+df_test1 <- h2o.importFile(path = normalizePath("/mnt/data/ORM_OOM/scoring_aug1_16.csv")) ##Test for a day on wk1##
+df_test2 <- h2o.importFile(path = normalizePath("/mnt/data/ORM_OOM/scoring_jul16_29.csv")) ##Test for a day on wk2##
+df_test3 <- h2o.importFile(path = normalizePath("/mnt/data/ORM_OOM/rk_swplst_wk_jun6_jun10-SCORING.csv")) ##Test for a day on wk3##
+df_test4 <- h2o.importFile(path = normalizePath("/mnt/data/ORM_OOM/RK_swplst_wk_JUL25_JUL29_16-SCORING.csv")) ##Test for a day on wk4##
+df_test5 <- h2o.importFile(path = normalizePath("/mnt/data/ORM_OOM/rk_swplst_wk_jul11_jul15-SCORING.csv")) ##Test for a day on wk5##
+
+
+## Lets do some data cleaning
+df <- df[-c(1,3,22:23,37:39,43)]
+
+## Create a new column if UNSUB_S = 1 and UNSUB_LT = 1
+df$oo_yn <- df$UNSUB_S + df$UNSUB_LT
+df_test1$oo_yn <- df_test1$UNSUB_S + df_test1$UNSUB_LT
+#df_test2$oo_yn <- df_test2$UNSUB_S + df_test2$UNSUB_LT
+#df_test3$oo_yn <- df_test3$UNSUB_S + df_test3$UNSUB_LT
+#df_test4$oo_yn <- df_test4$UNSUB_S + df_test4$UNSUB_LT
+#df_test5$oo_yn <- df_test5$UNSUB_S + df_test5$UNSUB_LT
+
+##Now drop the columns UNSUB_S = 1 and UNSUB_LT = 1
+df <- df[-c(35:36)]
+
+## convert the dep variable to a factor
+df$dep.var.orm <- as.factor(df$open_yn_id)
+df$dep.var.oom <- as.factor(df$oo_yn)
+df_test1$dep.var.orm <- as.factor(df_test1$open_yn_id)
+df_test1$dep.var.oom <- as.factor(df_test1$oo_yn)
+#df_test2$dep.var.orm <- as.factor(df_test2$open_yn_id)
+#df_test2$dep.var.oom <- as.factor(df_test2$oo_yn)
+#df_test3$dep.var.orm <- as.factor(df_test3$open_yn_id)
+#df_test3$dep.var.oom <- as.factor(df_test3$oo_yn)
+#df_test4$dep.var.orm <- as.factor(df_test4$open_yn_id)
+#df_test4$dep.var.oom <- as.factor(df_test4$oo_yn)
+#df_test5$dep.var.orm <- as.factor(df_test5$open_yn_id)
+#df_test5$dep.var.oom <- as.factor(df_test5$oo_yn)
+df <- df[-c(1,35)]
+  
+##Based on Milovan's variable selection
+df.orm <- df[-c(9:18,35)]
+df.oom <- df[-c(8,32:34)]
+
+df.orm <- df.orm[c(1,2,4:7,24)]
+#df.oom <- df.oom[c(1:2,4:7,10:12,16:17,31)]
+
+##Not proud about this piece of code, but doing some data manipulation to do some kind of sampling
+#data <- as.data.frame(df.orm)
+#df.orm.1 <- subset(data, dep.var.orm == '1')
+#df.orm.0 <- subset(data, dep.var.orm == '0')
+#sample.df.orm.1 <- df.orm.1[sample(1:nrow(df.orm.1), 45000,replace=FALSE),]
+#df.orm.final <- rbind(df.orm.0,sample.df.orm.1)
+
+##Move it back to a H2O Frame
+#df.orm <- as.h2o(df.orm.final)
+
+# Partition the data into training, validation and test sets
+splits.orm <- h2o.splitFrame(data = df.orm, 
+                         ratios = c(0.70, 0.25),  #partition data into 95%, 5%, 5% chunks
+                         seed = 1)  #setting a seed will guarantee reproducibility
+train <- splits.orm[[1]]
+valid <- splits.orm[[2]]
+test <- splits.orm[[3]]
+
+
+## Create a single column for test  
+# actual_dep <- h2o.assign(df_test[, "open_yn_id"], key = "actual_dep")
+# actual_dep <- na.omit(actual_dep)
+# summary(actual_dep)
+## Iteration 1 of GLM
+
+glm1.orm.fm <- h2o.glm(y = 7, x = 1:6, training_frame = train,
+                       validation_frame = valid, family = "binomial")
+
+
+## Iteration 2 of GLM
+glm2.orm.fm = h2o.glm(training_frame = train
+               ,validation_frame = valid, 
+               x = 1:6, 
+               y = 7, 
+               family='binomial', 
+               lambda_search=TRUE)
+
+## Iteration 1 of random forest
+rf1.orm.fm <- h2o.randomForest(         
+  training_frame = train,        
+  validation_frame = valid,      
+  x=1:6,                        
+  y=7,                          
+  model_id = "rf_orm_m1",    
+  ntrees = 200,                  
+  stopping_rounds = 2,           
+  score_each_iteration = T,      
+  seed = 1000000)
+
+
+##RF Iteration 2
+
+rf2.orm.fm <- h2o.randomForest(        
+  training_frame = train,       
+  validation_frame = valid,     
+  x=1:6,                       
+  y=7,                         
+  model_id = "rf_orm_m2",      
+  ntrees = 200,                 
+  max_depth = 30,               
+  stopping_rounds = 2,          
+  stopping_tolerance = 1e-2,    
+  score_each_iteration = T,     
+  seed=3000000)                 
+
+## Iteration 1 of GBM
+
+gbm1.orm.fm <- h2o.gbm(
+  training_frame = train,       
+  validation_frame = valid,      
+  x=1:6,                        
+  y=7,                          
+  model_id = "gbm_orm_m1",     
+  seed = 2000000)    
+
+
+## GBM Iteration 2
+
+gbm2.orm.fm <- h2o.gbm(
+  training_frame = train,     
+  validation_frame = valid,   
+  x=1:6,                     
+  y=7,                       
+  ntrees = 20,                
+  learn_rate = 0.2,           
+  max_depth = 10,             
+  stopping_rounds = 2,        
+  stopping_tolerance = 0.01,  
+  score_each_iteration = T,   
+  model_id = "gbm_orm_m2",  
+  seed = 2000000)       
+
+##GBM Cross Validation 
+gbm2.orm.cv <- h2o.gbm(
+  training_frame = train,     
+  validation_frame = valid,   
+  x=1:6,                     
+  y=7,                       
+  ntrees = 20,                
+  learn_rate = 0.2,           
+  max_depth = 10,             
+  stopping_rounds = 2,        
+  stopping_tolerance = 0.01,  
+  score_each_iteration = T,
+  nfolds=5,
+  seed = 2000000)   
+
+print(h2o.auc(gbm2.orm.cv,train = TRUE))
+print(h2o.auc(gbm2.orm.cv,xval = TRUE))
+
+gbm4.orm.cv <- h2o.gbm(
+  training_frame = train,     
+  validation_frame = valid,   
+  x=1:6,                     
+  y=7,                       
+  ntrees = 50,                
+  learn_rate = 0.2,           
+  max_depth = 10,             
+  stopping_rounds = 2,        
+  stopping_tolerance = 0.01,  
+  score_each_iteration = T,
+  nfolds=5,
+  seed = 2000000)
+
+print(h2o.auc(gbm4.orm.cv,train = TRUE))
+print(h2o.auc(gbm4.orm.cv,xval = TRUE))
+
+
+##GBM Iteration 3
+
+gbm3.orm.fm <- h2o.gbm(
+  training_frame = train,     
+  validation_frame = valid,   
+  x=1:6,                     
+  y=7,                       
+  ntrees = 30,                
+  learn_rate = 0.3,           
+  max_depth = 10,             
+  sample_rate = 0.7,          
+  col_sample_rate = 0.7,      
+  stopping_rounds = 2,        
+  stopping_tolerance = 0.01,  
+  score_each_iteration = T,   
+  model_id = "gbm_orm_m3",  
+  seed = 2000000)             
+
+##GBM Iteration 4
+
+gbm4.orm.fm <- h2o.gbm(
+  training_frame = train,     
+  validation_frame = valid,   
+  x=1:6,                     
+  y=7,                       
+  ntrees = 50,                
+  learn_rate = 0.2,           
+  max_depth = 10,             
+  stopping_rounds = 2,        
+  stopping_tolerance = 0.01,  
+  score_each_iteration = T,   
+  model_id = "gbm_orm_m4",  
+  seed = 2000000) 
+
+
+## Deep learning Model Iteration 1
+
+dl1.orm.fm <- h2o.deeplearning(
+  model_id="dl_orm_m1", 
+  training_frame=train, 
+  validation_frame=valid,   ## validation dataset: used for scoring and early stopping
+  x=1:6,
+  y=7,
+  #activation="Rectifier",  ## default
+  #hidden=c(200,200),       ## default: 2 hidden layers with 200 neurons each
+  epochs=1,
+  variable_importances=T    ## not enabled by default
+)
+
+## Deep learning Model Iteration 2
+
+dl2.orm.fm <- h2o.deeplearning(
+  model_id="dl_orm_m2", 
+  training_frame=train, 
+  validation_frame=valid,
+  x=1:6,
+  y=7,
+  hidden=c(32,32,32),                  ## small network, runs faster
+  epochs=1000000,                      ## hopefully converges earlier...
+  score_validation_samples=10000,      ## sample the validation dataset (faster)
+  stopping_rounds=2,
+  stopping_metric="misclassification", ## could be "MSE","logloss","r2"
+  stopping_tolerance=0.01
+)
+
+
+## Deep learning Model Iteration 3
+
+dl3.orm.fm <- h2o.deeplearning(
+  model_id="dl_orm_m3", 
+  training_frame=train, 
+  validation_frame=valid, 
+  x=1:6, 
+  y=7, 
+  overwrite_with_best_model=F,    ## Return the final model after 10 epochs, even if not the best
+  hidden=c(128,128,128),          ## more hidden layers -> more complex interactions
+  epochs=10,                      ## to keep it short enough
+  score_validation_samples=10000, ## downsample validation set for faster scoring
+  score_duty_cycle=0.025,         ## don't score more than 2.5% of the wall time
+  adaptive_rate=F,                ## manually tuned learning rate
+  rate=0.01, 
+  rate_annealing=2e-6,            
+  momentum_start=0.2,             ## manually tuned momentum
+  momentum_stable=0.4, 
+  momentum_ramp=1e7, 
+  l1=1e-5,                        ## add some L1/L2 regularization
+  l2=1e-5,
+  max_w2=10                       ## helps stability for Rectifier
+) 
+
+## Let us try some grid search to see if it can beat my exiting GBM model
+
+ntrees_opt <- c(5,20,50,100)
+max_depth_opt <- c(2,3,5,10)
+learn_rate_opt <- c(0.1,0.2)
+
+hyper_params = list('ntrees' = ntrees_opt,
+                    'max_depth' = max_depth_opt,
+                    'learn_rate' = learn_rate_opt)
+
+gs <- h2o.grid(algorithm = "gbm", 
+               hyper_params = hyper_params,
+               x = 1:6, y = 7, 
+               training_frame = train, 
+               validation_frame = valid)
+
+
+# Ensemble Learning
+# Example Script
+ensemble <- h2o.stackedEnsemble(x = x,
+                                y = y,
+                                training_frame = train,
+                                model_id = "my_ensemble_binomial",
+                                base_models = list(my_gbm@model_id, my_rf@model_id))
+
+# Eval ensemble performance on a test set
+perf <- h2o.performance(ensemble, newdata = test)
+
+# Compare to base learner performance on the test set
+perf_gbm_test <- h2o.performance(my_gbm, newdata = test)
+perf_rf_test <- h2o.performance(my_rf, newdata = test)
+baselearner_best_auc_test <- max(h2o.auc(perf_gbm_test), h2o.auc(perf_rf_test))
+ensemble_auc_test <- h2o.auc(perf)
+print(sprintf("Best Base-learner Test AUC:  %s", baselearner_best_auc_test))
+print(sprintf("Ensemble Test AUC:  %s", ensemble_auc_test))
+
+
+# Performance metrics for ORM model - equal sampling
+
+h2o.auc(h2o.performance(glm1.orm.fm, newdata = valid)) # 0.8516996
+h2o.auc(h2o.performance(glm2.orm.fm, newdata = valid)) # 0.8078139
+h2o.auc(h2o.performance(rf1.orm.fm, newdata = valid)) # 0.9496458
+h2o.auc(h2o.performance(rf2.orm.fm, newdata = valid)) # 0.9231605
+h2o.auc(h2o.performance(gbm1.orm.fm, newdata = valid)) # 0.9446507
+h2o.auc(h2o.performance(gbm2.orm.fm, newdata = valid)) # 0.9589744 select this
+h2o.auc(h2o.performance(gbm3.orm.fm, newdata = valid)) # 0.9624082
+h2o.auc(h2o.performance(dl1.orm.fm, newdata = valid)) # 0.881425
+h2o.auc(h2o.performance(dl2.orm.fm, newdata = valid)) # 0.9070223
+h2o.auc(h2o.performance(dl3.orm.fm, newdata = valid)) # 0.880546
+
+# Performance metrics for ORM model - Natural Event Rate
+h2o.auc(h2o.performance(glm1.orm.fm, newdata = valid)) # 0.8556861
+h2o.auc(h2o.performance(glm2.orm.fm, newdata = valid)) # 0.7361276
+h2o.auc(h2o.performance(rf1.orm.fm, newdata = valid)) # 0.9326379
+h2o.auc(h2o.performance(rf2.orm.fm, newdata = valid)) # 0.9090397
+h2o.auc(h2o.performance(gbm1.orm.fm, newdata = valid)) # 0.9432542
+h2o.auc(h2o.performance(gbm2.orm.fm, newdata = valid)) # 0.9535444 select this
+h2o.auc(h2o.performance(gbm3.orm.fm, newdata = valid)) # 0.9523585
+h2o.auc(h2o.performance(dl1.orm.fm, newdata = valid)) # 0.8477828
+h2o.auc(h2o.performance(dl2.orm.fm, newdata = valid)) # 0.8370234
+h2o.auc(h2o.performance(dl3.orm.fm, newdata = valid)) # 0.8596485
+
+h2o.auc(h2o.performance(gbm2.orm.fm, newdata = df_test1))
+df_test1_perf <- h2o.performance(gbm2.orm.fm, newdata = df_test1)
+df_test2_perf <- h2o.performance(gbm2.orm.fm, newdata = df_test2)
+df_test3_perf <- h2o.performance(gbm2.orm.fm, newdata = df_test3)
+df_test4_perf <- h2o.performance(gbm2.orm.fm, newdata = df_test4)
+df_test5_perf <- h2o.performance(gbm2.orm.fm, newdata = df_test5)
+
+df_test1_perf <- h2o.performance(gbm2.orm.fm, newdata = df_test1)
+df_test1_perf_v2 <- h2o.performance(gbm4.orm.fm, newdata = df_test1)
+
+df_test2_perf <- h2o.performance(gbm2.orm.fm, newdata = df_test2)
+df_test2_perf_v2 <- h2o.performance(gbm4.orm.fm, newdata = df_test2)
+
+df_test3_perf <- h2o.performance(gbm2.orm.fm, newdata = df_test3)
+df_test3_perf_v2 <- h2o.performance(gbm4.orm.fm, newdata = df_test3)
+
+df_test4_perf <- h2o.performance(gbm2.orm.fm, newdata = df_test4)
+df_test4_perf_v2 <- h2o.performance(gbm4.orm.fm, newdata = df_test4)
+
+df_test5_perf <- h2o.performance(gbm2.orm.fm, newdata = df_test5)
+df_test5_perf_v2 <- h2o.performance(gbm4.orm.fm, newdata = df_test5)
+
+# Compute Variable Importance
+varimps = data.frame(h2o.varimp(gbm2.orm.fm))
+varimps
+
+varimps = data.frame(h2o.varimp(gbm4.orm.fm))
+varimps
+
+# AUC curves
+gbm2.orm.fm@model$training_metrics@metrics$max_criteria_and_metric_scores
+fpr = gbm2.orm.fm@model$training_metrics@metrics$thresholds_and_metric_scores$fpr
+tpr = gbm2.orm.fm@model$training_metrics@metrics$thresholds_and_metric_scores$tpr
+fpr_val = gbm2.orm.fm@model$validation_metrics@metrics$thresholds_and_metric_scores$fpr
+tpr_val = gbm2.orm.fm@model$validation_metrics@metrics$thresholds_and_metric_scores$tpr
+plot(fpr,tpr, type='l')
+title('AUC')
+lines(fpr_val,tpr_val,type='l',col='red')
+legend("bottomright",c("Train", "Validation"),col=c("black","red"),lty=c(1,1),lwd=c(3,3)) 
+
+
+gbm4.orm.fm@model$training_metrics@metrics$max_criteria_and_metric_scores
+fpr = gbm4.orm.fm@model$training_metrics@metrics$thresholds_and_metric_scores$fpr
+tpr = gbm4.orm.fm@model$training_metrics@metrics$thresholds_and_metric_scores$tpr
+fpr_val = gbm2.orm.fm@model$validation_metrics@metrics$thresholds_and_metric_scores$fpr
+tpr_val = gbm2.orm.fm@model$validation_metrics@metrics$thresholds_and_metric_scores$tpr
+plot(fpr,tpr, type='l')
+title('AUC')
+lines(fpr_val,tpr_val,type='l',col='red')
+legend("bottomright",c("Train", "Validation"),col=c("black","red"),lty=c(1,1),lwd=c(3,3)) 
+
+
+gbm1.oom.fm@model$training_metrics@metrics$max_criteria_and_metric_scores
+fpr = gbm1.oom.fm@model$training_metrics@metrics$thresholds_and_metric_scores$fpr
+tpr = gbm1.oom.fm@model$training_metrics@metrics$thresholds_and_metric_scores$tpr
+fpr_val = gbm1.oom.fm@model$validation_metrics@metrics$thresholds_and_metric_scores$fpr
+tpr_val = gbm1.oom.fm@model$validation_metrics@metrics$thresholds_and_metric_scores$tpr
+plot(fpr,tpr, type='l')
+title('AUC')
+lines(fpr_val,tpr_val,type='l',col='red')
+legend("bottomright",c("Train", "Validation"),col=c("black","red"),lty=c(1,1),lwd=c(3,3)) 
+
+
+# PR Curves
+Precision = gbm2.orm.fm@model$training_metrics@metrics$thresholds_and_metric_scores$precision
+Recall = gbm2.orm.fm@model$training_metrics@metrics$thresholds_and_metric_scores$recall
+plot(Precision,Recall, type='l')
+title('PR curves')
+lines(Precision,Recall,type='l',col='red')
+legend("bottomright",c("Train", "Validation"),col=c("black","red"),lty=c(1,1),lwd=c(3,3)) 
+
+Precision = gbm4.orm.fm@model$training_metrics@metrics$thresholds_and_metric_scores$precision
+Recall = gbm4.orm.fm@model$training_metrics@metrics$thresholds_and_metric_scores$recall
+plot(Precision,Recall, type='l')
+title('PR curves')
+lines(Precision,Recall,type='l',col='red')
+legend("bottomright",c("Train", "Validation"),col=c("black","red"),lty=c(1,1),lwd=c(3,3)) 
+
+
+# ORM predictions
+
+# Test 1 ORM dataset
+pred_gbm2_orm_wk1 <- h2o.predict(gbm2.orm.fm, df_test1)
+wk1_predictions_orm <-h2o.cbind(df_test1[,"user_id"],pred_gbm2_orm_wk1[,"p1"],pred_gbm2_orm_wk1[,"predict"])
+pred_wk1_orm <- as.data.frame(wk1_predictions_orm)
+
+pred_gbm2_orm_wk2 <- h2o.predict(gbm2.orm.fm, df_test2)
+wk2_predictions_orm <-h2o.cbind(df_test2[,"user_id"],pred_gbm2_orm_wk2[,"p1"],pred_gbm2_orm_wk2[,"predict"],df_test2[,"open_yn_id"])
+pred_wk2_orm <- as.data.frame(wk2_predictions_orm)
+
+pred_gbm2_orm_wk3 <- h2o.predict(gbm2.orm.fm, df_test3)
+wk3_predictions_orm <-h2o.cbind(df_test3[,"user_id"],pred_gbm2_orm_wk3[,"p1"],pred_gbm2_orm_wk3[,"predict"])
+pred_wk3_orm <- as.data.frame(wk3_predictions_orm)
+
+pred_gbm2_orm_wk4 <- h2o.predict(gbm2.orm.fm, df_test4)
+wk4_predictions_orm <-h2o.cbind(df_test4[,"user_id"],pred_gbm2_orm_wk4[,"p1"],pred_gbm2_orm_wk4[,"predict"])
+pred_wk4_orm <- as.data.frame(wk4_predictions_orm)
+
+pred_gbm2_orm_wk5 <- h2o.predict(gbm2.orm.fm, df_test5)
+wk5_predictions_orm <-h2o.cbind(df_test5[,"user_id"],pred_gbm2_orm_wk5[,"p1"],pred_gbm2_orm_wk5[,"predict"])
+pred_wk5_orm <- as.data.frame(wk5_predictions_orm)
+
+
+## Save the Model
+path <- h2o.saveModel(gbm2.orm.fm, 
+                      path="./mybest_gbm_orm_model", force=TRUE)
+## Retrieve it back
+print(path)
+m_loaded <- h2o.loadModel(path)
+summary(m_loaded)
+
+## Create POJOs for the chosen model
+h2o.download_pojo(gbm2.orm.fm)  
+h2o.download_pojo(gbm2.orm.fm, path = "/home/muthiyagarajan", getjar = NULL, get_jar = TRUE)
+
+h2o.download_pojo(gbm1.oom.fm)  
+h2o.download_pojo(gbm1.oom.fm, path = "/home/muthiyagarajan", getjar = NULL, get_jar = TRUE)
+
+## Transfer the final prediction file to TD 
+
+require(ebaytd)
+
+conn = teradataConnect(system="mozart",
+                       user = .rs.askForPassword("teradata username"),
+                       password = .rs.askForPassword("teradata password"),
+                       database = "p_cia_t.MT_GBM_DND")
+
+connf = teradataConnect( system="mozart",
+                         user = .rs.askForPassword("teradata username"),
+                         password = .rs.askForPassword("teradata password"),
+                         fast=TRUE, database = "p_cia_t.MT_gbm_DND")
+
+print( paste( Sys.time(), "teradataFastload started..."))
+teradataFastload( pred_gbm3, conn = conn, conn_fast = connf, vdm = "p_cia_t",
+                  table = "MT_GBM_DND",
+                  replace = TRUE, primary_index = 1, partition_date = NULL)
+print( paste( Sys.time(), "teradataFastload finished."))
+
+##Calculate probabilty thresholds
+##Convert user_id to int from df_test2
+df_test2 <- as.integer(df_test2$user_id)
+colnames(df_test2)
+str(pred_wk2_orm)
+colnames(pred_wk2_orm)
+new_pred <- h2o.merge(df_test2, pred_wk2_orm)
+
+##wk2_predictions_orm
+##pred_wk2_orm
+##pred_gbm2_orm_wk2
+colnames(wk2_predictions_orm)
+a <- merge(df_test2,pred_wk2_orm)
+a <- h2o.merge(df_test2,pred_gbm2_orm_wk2,all.x = TRUE)
+a <- h2o.merge(df_test2,wk2_predictions_orm) ##
+b <- h2o.merge(df_test2,wk2_predictions_orm,by.x=list(user_id), by.y = list(user_id))
+##convert to R dataframe
+df_2 <- as.data.frame(df_test2)
+df_pred_wk2 <- as.data.frame(wk2_predictions_orm)
+
+
+h2o.exportFile(wk1_predictions_orm, path = "/mnt/data/ORM_OOM//wk1_predictions_orm.csv")
+h2o.exportFile(wk1_predictions_oom, path = "/mnt/data/ORM_OOM//wk1_predictions_oom.csv")
+
+##Importing the new datafiles created by Azadeh
+d1 <- h2o.importFile(path = normalizePath("/mnt/data/ORM_OOM/d1.csv"))
+d2 <- h2o.importFile(path = normalizePath("/mnt/data/ORM_OOM/d2.csv"))
+d3 <- h2o.importFile(path = normalizePath("/mnt/data/ORM_OOM/d3.csv"))
+d4 <- h2o.importFile(path = normalizePath("/mnt/data/ORM_OOM/d4.csv"))
+d5 <- h2o.importFile(path = normalizePath("/mnt/data/ORM_OOM/d5.csv"))
+
+
+d1$user_id <- d1$C1                      
+d1$opnd_dd <- d1$C4                       
+d1$or_dd <- d1$C5                         
+d1$opnd4w <- d1$C6                        
+d1$or4w <- d1$C7                          
+d1$or1w <- d1$C8                          
+d1$or_ndd <- d1$C9
+
+d2$user_id <- d2$C1                      
+d2$opnd_dd <- d2$C4                       
+d2$or_dd <- d2$C5                         
+d2$opnd4w <- d2$C6                        
+d2$or4w <- d2$C7                          
+d2$or1w <- d2$C8                          
+d2$or_ndd <- d2$C9
+
+d3$user_id <- d3$C1                      
+d3$opnd_dd <- d3$C4                       
+d3$or_dd <- d3$C5                         
+d3$opnd4w <- d3$C6                        
+d3$or4w <- d3$C7                          
+d3$or1w <- d3$C8                          
+d3$or_ndd <- d3$C9
+
+d4$user_id <- d4$C1                      
+d4$opnd_dd <- d4$C4                       
+d4$or_dd <- d4$C5                         
+d4$opnd4w <- d4$C6                        
+d4$or4w <- d4$C7                          
+d4$or1w <- d4$C8                          
+d4$or_ndd <- d4$C9
+
+d5$user_id <- d5$C1                      
+d5$opnd_dd <- d5$C4                       
+d5$or_dd <- d5$C5                         
+d5$opnd4w <- d5$C6                        
+d5$or4w <- d5$C7                          
+d5$or1w <- d5$C8                          
+d5$or_ndd <- d5$C9
+
+
+pred_d1 <- h2o.predict(gbm4.orm.fm, d1)
+d1_orm <-h2o.cbind(d1[,"user_id"],pred_d1[,"p1"],pred_d1[,"predict"])
+
+pred_d2 <- h2o.predict(gbm4.orm.fm, d2)
+d2_orm <-h2o.cbind(d2[,"user_id"],pred_d2[,"p1"],pred_d2[,"predict"])
+
+pred_d3 <- h2o.predict(gbm4.orm.fm, d3)
+d3_orm <-h2o.cbind(d3[,"user_id"],pred_d3[,"p1"],pred_d3[,"predict"])
+
+pred_d4 <- h2o.predict(gbm4.orm.fm, d4)
+d4_orm <-h2o.cbind(d4[,"user_id"],pred_d4[,"p1"],pred_d4[,"predict"])
+
+pred_d5 <- h2o.predict(gbm4.orm.fm, d5)
+d5_orm <-h2o.cbind(d5[,"user_id"],pred_d5[,"p1"],pred_d5[,"predict"])
+
+h2o.exportFile(d1_orm, path = "/mnt/data/ORM_OOM//d1_v2_orm.csv")
+h2o.exportFile(d2_orm, path = "/mnt/data/ORM_OOM//d2_v2_orm.csv")
+h2o.exportFile(d3_orm, path = "/mnt/data/ORM_OOM//d3_v2_orm.csv")
+h2o.exportFile(d4_orm, path = "/mnt/data/ORM_OOM//d4_v2_orm.csv")
+h2o.exportFile(d5_orm, path = "/mnt/data/ORM_OOM//d5_v2_orm.csv")
+
+
+library(data.table)
+require(ebaytd)
+
+data <- fread('/mnt/data/ORM_OOM//d5_orm.csv', header = F, sep = ',')
+colnames(data) <- c("user_id", "p1", "predict")
+
+conn <- teradataConnect(system="mozart", user = "muthiyagarajan", password = .rs.askForPassword("teradata password"), database = "P_CIA_T")
+connf <- teradataConnect(system="mozart", user = "muthiyagarajan", password = .rs.askForPassword("teradata password"), fast=TRUE, database = "P_CIA_T")
+
+teradataFastload(data, 
+                 conn=conn, 
+                 conn_fast=connf, 
+                 vdm = "P_CIA_T", 
+                 table = "d5_orm_v2_dnd", 
+                 replace = TRUE, 
+                 primary_index = c(1), 
+                 partition_date = NULL)
+
+library(ebaytd)
+conn <- teradataConnect(system = "mozart", user = "muthiyagarajan", password = .rs.askForPassword("teradata password"),database = "P_CIA_T" ,fastload = FALSE)
+d1 <- dbGetQuery(conn,"select * from p_cia_t.user_cmpgn_US_d1_dnd_m")
+
+
+ 
